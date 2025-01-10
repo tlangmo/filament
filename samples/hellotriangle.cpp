@@ -20,6 +20,7 @@
 #include <filament/Material.h>
 #include <filament/MaterialInstance.h>
 #include <filament/RenderableManager.h>
+#include <filament/Renderer.h>
 #include <filament/Scene.h>
 #include <filament/Skybox.h>
 #include <filament/TransformManager.h>
@@ -35,8 +36,9 @@
 
 #include <cmath>
 #include <iostream>
-
-
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
+#include <sstream>
 #include "generated/resources/resources.h"
 
 using namespace filament;
@@ -119,16 +121,21 @@ static int handleCommandLineArguments(int argc, char* argv[], App* app) {
     return optind;
 }
 
+Viewport current_vp;
+int frameCounter = 0;
+
 int main(int argc, char** argv) {
     App app{};
-    app.config.title = "hellotriangle";
+    app.config.title = "headless_triangle";
     app.config.featureLevel = backend::FeatureLevel::FEATURE_LEVEL_0;
+    app.config.headless = true;
     handleCommandLineArguments(argc, argv, &app);
 
     auto setup = [&app](Engine* engine, View* view, Scene* scene) {
-        app.skybox = Skybox::Builder().color({0.1, 0.125, 0.25, 1.0}).build(*engine);
+        app.skybox = Skybox::Builder().color({0.8, 0.125, 0.25, 1.0}).build(*engine);
         scene->setSkybox(app.skybox);
         view->setPostProcessingEnabled(false);
+
         static_assert(sizeof(Vertex) == 12, "Strange vertex size.");
         app.vb = VertexBuffer::Builder()
                 .vertexCount(3)
@@ -158,6 +165,7 @@ int main(int argc, char** argv) {
                 .castShadows(false)
                 .build(*engine, app.renderable);
         scene->addEntity(app.renderable);
+        
         app.camera = utils::EntityManager::get().create();
         app.cam = engine->createCamera(app.camera);
         view->setCamera(app.cam);
@@ -173,6 +181,35 @@ int main(int argc, char** argv) {
         utils::EntityManager::get().destroy(app.camera);
     };
 
+    auto postRender = [&app](filament::Engine* engine, filament::View* view,
+            filament::Scene* scene, filament::Renderer* renderer)
+            {
+                const Viewport& vp = view->getViewport();
+                current_vp = vp;
+                const size_t byteCount = vp.width * vp.height * 4;
+                // Create a buffer descriptor that writes the PPM after the data becomes ready on the CPU.
+                void* user_data = new Viewport(vp);
+                backend::PixelBufferDescriptor buffer(
+                    new uint8_t[byteCount],
+                    byteCount,
+                    backend::PixelBufferDescriptor::PixelDataFormat::RGBA,
+                    backend::PixelBufferDescriptor::PixelDataType::UBYTE,
+                    [](void* buffer, size_t size, void* user) {
+                         const Viewport vp = *(const Viewport*)user;
+                         frameCounter++;
+                         std::stringstream ss;
+                         ss << "triangle_" << frameCounter << ".png";
+                         std::cout << ss.str() << std::endl;
+                         stbi_write_png(ss.str().c_str(), vp.width, vp.height, 4, buffer,  vp.width * 4);
+                    }, 
+                    &current_vp
+                );
+
+                //Invoke readPixels asynchronously.
+                renderer->readPixels(0,0, vp.width, vp.height,
+                        std::move(buffer));
+
+            };
     FilamentApp::get().animate([&app](Engine* engine, View* view, double now) {
         constexpr float ZOOM = 1.5f;
         const uint32_t w = view->getViewport().width;
@@ -186,7 +223,7 @@ int main(int argc, char** argv) {
                 filament::math::mat4f::rotation(now, filament::math::float3{ 0, 0, 1 }));
     });
 
-    FilamentApp::get().run(app.config, setup, cleanup);
+    FilamentApp::get().run(app.config, setup, nullptr, nullptr, nullptr, postRender);
 
     return 0;
 }
